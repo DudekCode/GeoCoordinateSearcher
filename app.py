@@ -1,13 +1,17 @@
+# === IMPORTY ===
 # Importy wbudowane
 import re
 import time
+import random
 from io import BytesIO
+
 # Importy zewnętrzne
 import streamlit as st
 import pandas as pd
 import pydeck as pdk
 import folium
 from streamlit.components.v1 import html
+
 # Selenium do automatyzacji przeglądarki
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -17,59 +21,49 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
-# === FUNKCJE ===
-def get_google_maps_link(address):
-    """ Pobiera link do Google Maps na podstawie wpisanego adresu oraz wyciąga poprawny adres wyszukany przez Google Maps. """
-    service = Service(ChromeDriverManager().install())
-    options = webdriver.ChromeOptions()
-    options.add_argument("--headless")  # Uruchomienie w tle (bez okna)
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
 
+# === FUNKCJE ===
+
+def get_google_maps_link(address):
+    """ Pobiera link do Google Maps na podstawie wpisanego adresu. """
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless")  # Tryb bez interfejsu graficznego
+    options.add_argument("--no-sandbox")  # Wymagane w środowiskach cloudowych
+    options.add_argument("--disable-dev-shm-usage")  # Zapobiega problemom z pamięcią
+    options.add_argument("--disable-blink-features=AutomationControlled")  # Ukrywa działanie jako bot
+
+    service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=options)
 
     try:
         driver.get("https://www.google.com/maps")
-        wait = WebDriverWait(driver, 7)
-
-        # Akceptacja cookies (jeśli się pojawi)
-        try:
-            accept_button = wait.until(EC.element_to_be_clickable((By.XPATH, '//span[text()="Zaakceptuj wszystko"]')))
-            accept_button.click()
-            time.sleep(random.uniform(2, 5)) 
-        except Exception:
-            pass  # Jeśli nie ma przycisku, idziemy dalej
+        time.sleep(2)
 
         # Wpisanie adresu w pole wyszukiwania
-        search_box = wait.until(EC.element_to_be_clickable((By.ID, "searchboxinput")))
+        search_box = driver.find_element(By.ID, "searchboxinput")
         search_box.clear()
         search_box.send_keys(address)
         search_box.send_keys(Keys.RETURN)
-
+        
         time.sleep(5)  # Czekamy na załadowanie wyników
-
-        # Pobieranie linku do mapy
         map_link = driver.current_url
 
-        # Wyciąganie adresu z wyników wyszukiwania (element <span class="DkEaL">)
+        # Pobieranie wyświetlonego adresu
         try:
-            address_element = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'span.DkEaL')))
+            address_element = driver.find_element(By.CSS_SELECTOR, 'span.DkEaL')
             search_name = address_element.text
-
-            # Sprawdzanie, czy wynik jest zbyt ogólny
-            if "Warszawa" in search_name or "dzielnica" in search_name or len(search_name.split(',')) > 2:
-                search_name = "Nazwa jest zbyt ogólna, aby jednoznacznie zidentyfikować lokalizację."
-        except Exception:
-            search_name = "Brak dokładnego adresu"
+        except:
+            search_name = "Nie znaleziono dokładnego adresu"
 
     except Exception as e:
         map_link = f"Błąd: {e}"
-        search_name = "Błąd przy wyszukiwaniu"
+        search_name = "Błąd podczas wyszukiwania"
 
     finally:
         driver.quit()
 
     return map_link, search_name
+
 
 def extract_coordinates(map_link):
     """ Wyciąga współrzędne geograficzne z linku Google Maps. """
@@ -78,24 +72,61 @@ def extract_coordinates(map_link):
         return float(match.group(1)), float(match.group(2))
     return None, None
 
+
 def is_valid_address(address):
     """ Sprawdza, czy adres zawiera przynajmniej jedną literę (aby uniknąć wpisywania samych cyfr). """
     return bool(re.search(r'[a-zA-ZąćęłńóśźżĄĆĘŁŃÓŚŹŻ]', address))
 
-# Funkcja do tworzenia mapy Folium z czerwonymi znacznikami
+
 def create_folium_map(locations):
-    # Tworzenie mapy na współrzędnych środkowych
+    """ Tworzy mapę z czerwonymi znacznikami na podstawie podanych współrzędnych. """
     m = folium.Map(location=[locations[0]['lat'], locations[0]['lon']], zoom_start=12)   
-    # Dodawanie markerów na mapie z czerwonym kolorem
     for loc in locations:
         folium.Marker(
             [loc['lat'], loc['lon']],
             popup=loc.get('address', 'Brak adresu'),
             icon=folium.Icon(color='red') 
-        ).add_to(m)   
-    # Zwracanie mapy jako obiekt HTML
+        ).add_to(m)
     return m._repr_html_()
 
+
+# === INTERFEJS STREAMLIT ===
+
+st.set_page_config(page_title="GeoCoordinateSearcher", layout="wide")
+
+st.title("🌍 GeoCoordinateSearcher")
+st.write("Aplikacja do wyszukiwania współrzędnych geograficznych na podstawie adresu.")
+
+# Pole tekstowe do wpisania adresu
+address = st.text_input("Wpisz adres:", placeholder="np. Pałac Kultury i Nauki, Warszawa")
+
+# Przycisk "Szukaj"
+if st.button("🔍 Szukaj współrzędnych"):
+
+    if not is_valid_address(address):
+        st.error("⚠️ Wprowadź poprawny adres (przynajmniej jedna litera).")
+    else:
+        st.info("🔄 Wyszukiwanie współrzędnych, proszę czekać...")
+
+        # Pobranie linku i współrzędnych
+        map_link, search_name = get_google_maps_link(address)
+        lat, lon = extract_coordinates(map_link)
+
+        if lat and lon:
+            st.success(f"✅ Współrzędne dla adresu '{search_name}':")
+            st.write(f"📍 Szerokość geograficzna: `{lat}`")
+            st.write(f"📍 Długość geograficzna: `{lon}`")
+
+            # Wyświetlenie linku do Google Maps
+            st.markdown(f"[🌐 Zobacz na Google Maps]({map_link})")
+
+            # Tworzenie mapy
+            locations = [{"lat": lat, "lon": lon, "address": search_name}]
+            map_html = create_folium_map(locations)
+            html(map_html, height=500)
+
+        else:
+            st.error("⚠️ Nie udało się pobrać współrzędnych. Spróbuj ponownie.")
 
 
 # === STREAMLIT UI ===
